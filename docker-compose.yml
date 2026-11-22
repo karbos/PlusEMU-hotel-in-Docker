@@ -1,0 +1,65 @@
+# PlusEMU hotel als Docker-stack: MariaDB + één "hotel"-container
+# (emulator + nginx + PHP-FPM + Atom CMS + Volt client, gestuurd door supervisord).
+services:
+  db:
+    image: mariadb:11.4
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?zet DB_ROOT_PASSWORD in .env}
+      MARIADB_DATABASE: plus
+      MARIADB_USER: hotel
+      MARIADB_PASSWORD: ${DB_PASSWORD:?zet DB_PASSWORD in .env}
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # poort 3306 wordt bewust NIET gepubliceerd
+
+  hotel:
+    pull_policy: never
+    image: plusemu-hotel:latest
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:?zet DOMAIN in .env}
+      WS_URL: ${WS_URL:-}
+      HOTEL_NAME: ${HOTEL_NAME:-Hotel}
+      DB_HOST: db
+      DB_PASSWORD: ${DB_PASSWORD}
+      ASSET_PACK_URL: ${ASSET_PACK_URL:-}
+    ports:
+      - "${HOTEL_PORT:-8085}:80"   # alleen nodig als je de tunnel buiten Compose draait
+    volumes:
+      - emu-config:/opt/hotel/emulator/Config
+      - hotel-files:/opt/hotel/hotel-files
+      - cms-storage:/opt/hotel/cms/storage
+    healthcheck:
+      test: ["CMD-SHELL", "[ \"$$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/gamedata/furnidata/version)\" != 000 ]"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 900s   # eerste start downloadt ~550 MB hotel-bestanden
+
+  # Optioneel: Cloudflare Tunnel binnen dezelfde stack (docker compose --profile tunnel up -d)
+  # Public hostname in het Cloudflare-dashboard -> Service: http://hotel:80
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      - hotel
+
+volumes:
+  db:
+  emu-config:
+  hotel-files:
+  cms-storage:
